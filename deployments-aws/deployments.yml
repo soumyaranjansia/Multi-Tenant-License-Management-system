@@ -1,0 +1,894 @@
+# Gov2Biz EKS Deployments
+# Kubernetes deployment manifests for all microservices
+# Deploy with: kubectl apply -f deployments.yml
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gov2biz
+  labels:
+    name: gov2biz
+
+---
+# ConfigMap for shared configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gov2biz-config
+  namespace: gov2biz
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  JWT_ISSUER: "Gov2BizAPI"
+  JWT_AUDIENCE: "Gov2BizClients"
+  REDIS_HOST: "gov2biz-redis"
+  REDIS_PORT: "6379"
+  SQL_SERVER_HOST: "gov2biz-mssql"
+  SQL_SERVER_PORT: "1433"
+  SQL_SERVER_DATABASE: "Gov2Biz"
+
+---
+# Secret for sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gov2biz-secrets
+  namespace: gov2biz
+type: Opaque
+stringData:
+  JWT_KEY: "YourSuperSecretKeyForJWTTokenGeneration123!@#$%"
+  SQL_SA_PASSWORD: "YourStrong@Passw0rd123"
+  RAZORPAY_KEY_ID: "your_razorpay_key_id"
+  RAZORPAY_KEY_SECRET: "your_razorpay_key_secret"
+
+---
+# SQL Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mssql
+  namespace: gov2biz
+  labels:
+    app: mssql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mssql
+  template:
+    metadata:
+      labels:
+        app: mssql
+    spec:
+      containers:
+      - name: mssql
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+        - containerPort: 1433
+          name: mssql
+        env:
+        - name: ACCEPT_EULA
+          value: "Y"
+        - name: MSSQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: SQL_SA_PASSWORD
+        - name: MSSQL_PID
+          value: "Developer"
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: mssql-data
+          mountPath: /var/opt/mssql
+        - name: mssql-scripts
+          mountPath: /scripts
+        livenessProbe:
+          exec:
+            command:
+            - /opt/mssql-tools18/bin/sqlcmd
+            - -S
+            - localhost
+            - -U
+            - sa
+            - -P
+            - $(MSSQL_SA_PASSWORD)
+            - -C
+            - -Q
+            - SELECT 1
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+      volumes:
+      - name: mssql-data
+        persistentVolumeClaim:
+          claimName: mssql-pvc
+      - name: mssql-scripts
+        configMap:
+          name: mssql-init-scripts
+
+---
+# SQL Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gov2biz-mssql
+  namespace: gov2biz
+spec:
+  selector:
+    app: mssql
+  ports:
+  - port: 1433
+    targetPort: 1433
+  type: ClusterIP
+
+---
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: gov2biz
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gov2biz-redis
+  namespace: gov2biz
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  type: ClusterIP
+
+---
+# License Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: license-service
+  namespace: gov2biz
+  labels:
+    app: license-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: license-service
+  template:
+    metadata:
+      labels:
+        app: license-service
+    spec:
+      containers:
+      - name: license-service
+        image: <YOUR_ECR_REPO>/gov2biz-license-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ConnectionStrings__DefaultConnection
+          value: "Server=$(SQL_SERVER_HOST),$(SQL_SERVER_PORT);Database=$(SQL_SERVER_DATABASE);User Id=sa;Password=$(SQL_SA_PASSWORD);TrustServerCertificate=True;MultipleActiveResultSets=true"
+        - name: SQL_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_HOST
+        - name: SQL_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_PORT
+        - name: SQL_SERVER_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_DATABASE
+        - name: SQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: SQL_SA_PASSWORD
+        - name: Jwt__Issuer
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_ISSUER
+        - name: Jwt__Audience
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_AUDIENCE
+        - name: Jwt__Key
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: JWT_KEY
+        - name: Redis__Host
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: REDIS_HOST
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+
+---
+# License Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: license-service
+  namespace: gov2biz
+spec:
+  selector:
+    app: license-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Payment Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: gov2biz
+  labels:
+    app: payment-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+      - name: payment-service
+        image: <YOUR_ECR_REPO>/gov2biz-payment-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ConnectionStrings__DefaultConnection
+          value: "Server=$(SQL_SERVER_HOST),$(SQL_SERVER_PORT);Database=$(SQL_SERVER_DATABASE);User Id=sa;Password=$(SQL_SA_PASSWORD);TrustServerCertificate=True;MultipleActiveResultSets=true"
+        - name: SQL_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_HOST
+        - name: SQL_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_PORT
+        - name: SQL_SERVER_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_DATABASE
+        - name: SQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: SQL_SA_PASSWORD
+        - name: Jwt__Issuer
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_ISSUER
+        - name: Jwt__Audience
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_AUDIENCE
+        - name: Jwt__Key
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: JWT_KEY
+        - name: Razorpay__KeyId
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: RAZORPAY_KEY_ID
+        - name: Razorpay__KeySecret
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: RAZORPAY_KEY_SECRET
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+
+---
+# Payment Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: gov2biz
+spec:
+  selector:
+    app: payment-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Document Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-service
+  namespace: gov2biz
+  labels:
+    app: document-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: document-service
+  template:
+    metadata:
+      labels:
+        app: document-service
+    spec:
+      containers:
+      - name: document-service
+        image: <YOUR_ECR_REPO>/gov2biz-document-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ConnectionStrings__DefaultConnection
+          value: "Server=$(SQL_SERVER_HOST),$(SQL_SERVER_PORT);Database=$(SQL_SERVER_DATABASE);User Id=sa;Password=$(SQL_SA_PASSWORD);TrustServerCertificate=True;MultipleActiveResultSets=true"
+        - name: SQL_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_HOST
+        - name: SQL_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_PORT
+        - name: SQL_SERVER_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_DATABASE
+        - name: SQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: SQL_SA_PASSWORD
+        - name: Jwt__Issuer
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_ISSUER
+        - name: Jwt__Audience
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_AUDIENCE
+        - name: Jwt__Key
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: JWT_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: document-storage
+          mountPath: /app/uploads
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+      volumes:
+      - name: document-storage
+        persistentVolumeClaim:
+          claimName: document-pvc
+
+---
+# Document Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-service
+  namespace: gov2biz
+spec:
+  selector:
+    app: document-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Notification Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: gov2biz
+  labels:
+    app: notification-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - name: notification-service
+        image: <YOUR_ECR_REPO>/gov2biz-notification-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ConnectionStrings__DefaultConnection
+          value: "Server=$(SQL_SERVER_HOST),$(SQL_SERVER_PORT);Database=$(SQL_SERVER_DATABASE);User Id=sa;Password=$(SQL_SA_PASSWORD);TrustServerCertificate=True;MultipleActiveResultSets=true"
+        - name: SQL_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_HOST
+        - name: SQL_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_PORT
+        - name: SQL_SERVER_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: SQL_SERVER_DATABASE
+        - name: SQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: SQL_SA_PASSWORD
+        - name: Jwt__Issuer
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_ISSUER
+        - name: Jwt__Audience
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_AUDIENCE
+        - name: Jwt__Key
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: JWT_KEY
+        - name: Redis__Host
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: REDIS_HOST
+        - name: Hangfire__RedisConnection
+          value: "$(REDIS_HOST):$(REDIS_PORT)"
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: REDIS_PORT
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+
+---
+# Notification Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: gov2biz
+spec:
+  selector:
+    app: notification-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# API Gateway Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: gov2biz
+  labels:
+    app: api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+      - name: api-gateway
+        image: <YOUR_ECR_REPO>/gov2biz-api-gateway:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: LicenseService__Host
+          value: "http://license-service"
+        - name: PaymentService__Host
+          value: "http://payment-service"
+        - name: DocumentService__Host
+          value: "http://document-service"
+        - name: NotificationService__Host
+          value: "http://notification-service"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+
+---
+# API Gateway Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: gov2biz
+spec:
+  selector:
+    app: api-gateway
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# MVC Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mvc-frontend
+  namespace: gov2biz
+  labels:
+    app: mvc-frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mvc-frontend
+  template:
+    metadata:
+      labels:
+        app: mvc-frontend
+    spec:
+      containers:
+      - name: mvc-frontend
+        image: <YOUR_ECR_REPO>/gov2biz-mvc-frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: ASPNETCORE_ENVIRONMENT
+        - name: ApiGateway__BaseUrl
+          value: "http://api-gateway"
+        - name: Jwt__Issuer
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_ISSUER
+        - name: Jwt__Audience
+          valueFrom:
+            configMapKeyRef:
+              name: gov2biz-config
+              key: JWT_AUDIENCE
+        - name: Jwt__Key
+          valueFrom:
+            secretKeyRef:
+              name: gov2biz-secrets
+              key: JWT_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 5
+
+---
+# MVC Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mvc-frontend
+  namespace: gov2biz
+spec:
+  selector:
+    app: mvc-frontend
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Persistent Volume Claim for SQL Server
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mssql-pvc
+  namespace: gov2biz
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: gp3
+
+---
+# Persistent Volume Claim for Documents
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: document-pvc
+  namespace: gov2biz
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: efs-sc
+
+---
+# HorizontalPodAutoscaler for License Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: license-service-hpa
+  namespace: gov2biz
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: license-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# HorizontalPodAutoscaler for Payment Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-service-hpa
+  namespace: gov2biz
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+# HorizontalPodAutoscaler for Frontend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mvc-frontend-hpa
+  namespace: gov2biz
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mvc-frontend
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

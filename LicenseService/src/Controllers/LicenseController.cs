@@ -1,0 +1,482 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using MediatR;
+using System.Text.Json;
+using Gov2Biz.LicenseService.Commands;
+using Gov2Biz.LicenseService.Queries;
+using Gov2Biz.LicenseService.Models.DTOs;
+using Gov2Biz.LicenseService.Models;
+using Gov2Biz.Shared.Context;
+using Microsoft.Data.SqlClient;
+using Dapper;
+
+namespace Gov2Biz.LicenseService.Controllers;
+
+/// <summary>
+/// License management controller.
+/// All endpoints require Authentication and X-Tenant-ID header.
+/// </summary>
+[ApiController]
+[Route("api/[controller]")]
+[Authorize]
+public class LicenseController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    private readonly ITenantContext _tenantContext;
+    private readonly ILogger<LicenseController> _logger;
+    private readonly IConfiguration _configuration;
+
+    public LicenseController(
+        IMediator mediator,
+        ITenantContext tenantContext,
+        ILogger<LicenseController> logger,
+        IConfiguration configuration)
+    {
+        _mediator = mediator;
+        _tenantContext = tenantContext;
+        _logger = logger;
+        _configuration = configuration;
+    }
+
+    /// <summary>
+    /// Create a new license application.
+    /// </summary>
+    /// <param name="request">License application details</param>
+    /// <response code="201">License created successfully</response>
+    /// <response code="400">Validation error</response>
+    /// <response code="401">Unauthorized</response>
+    [HttpPost]
+    [ProducesResponseType(typeof(CreateLicenseResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CreateLicense([FromBody] CreateLicenseRequest request)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        var username = User.Claims.FirstOrDefault(c => c.Type == "preferred_username")?.Value 
+            ?? "system";
+
+        // Check if user is admin (for auto-activation)
+        var userRole = User.Claims.FirstOrDefault(c => 
+            c.Type == "role" || 
+            c.Type == "roles" ||
+            c.Type == "http://schemas.microsoft.com/ws/2008/06/identity/claims/role")?.Value;
+
+        if (string.IsNullOrEmpty(userRole) && Request.Headers.TryGetValue("X-User-Role", out var roleHeader))
+        {
+            userRole = roleHeader.ToString();
+        }
+
+        var isAdmin = !string.IsNullOrEmpty(userRole) && userRole.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+
+        // Serialize metadata to JSON
+        string? metadataJson = null;
+        if (request.Metadata != null)
+        {
+            metadataJson = JsonSerializer.Serialize(request.Metadata);
+        }
+
+        var command = new CreateLicenseCommand
+        {
+            ApplicantName = request.ApplicantName,
+            ApplicantEmail = request.ApplicantEmail,
+            LicenseType = request.LicenseType,
+            Amount = request.Amount,
+            ExpiryDate = request.ExpiryDate,
+            Metadata = metadataJson,
+            TenantId = tenantId,
+            PerformedBy = username,
+            IsAdminCreated = isAdmin
+        };
+
+        var response = await _mediator.Send(command);
+
+        _logger.LogInformation(
+            "License {LicenseId} created for tenant {TenantId} by {Username} (Admin: {IsAdmin}, Status: {Status})",
+            response.Id,
+            tenantId,
+            username,
+            isAdmin,
+            response.Status);
+
+        return CreatedAtAction(
+            nameof(GetLicense),
+            new { id = response.Id },
+            response);
+    }
+
+    /// <summary>
+    /// Get license details by ID.
+    /// </summary>
+    /// <param name="id">License ID</param>
+    /// <response code="200">License details</response>
+    /// <response code="404">License not found or belongs to different tenant</response>
+    [HttpGet("{id}")]
+    [ProducesResponseType(typeof(LicenseDetailsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetLicense(int id)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        var query = new GetLicenseByIdQuery
+        {
+            LicenseId = id,
+            TenantId = tenantId
+        };
+
+        var license = await _mediator.Send(query);
+
+        if (license == null)
+        {
+            _logger.LogWarning(
+                "License {LicenseId} not found for tenant {TenantId}",
+                id,
+                tenantId);
+
+            return NotFound(new
+            {
+                error = new
+                {
+                    message = "License not found",
+                    code = "NOT_FOUND",
+                    traceId = HttpContext.TraceIdentifier
+                }
+            });
+        }
+
+        return Ok(license);
+    }
+
+    /// <summary>
+    /// Renew an existing license.
+    /// </summary>
+    /// <param name="id">License ID</param>
+    /// <param name="request">Renewal details</param>
+    /// <response code="200">License renewed successfully</response>
+    /// <response code="404">License not found</response>
+    [HttpPut("renew/{id}")]
+    [ProducesResponseType(typeof(RenewLicenseResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RenewLicense(int id, [FromBody] RenewLicenseRequest request)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        var username = User.Claims.FirstOrDefault(c => c.Type == "preferred_username")?.Value 
+            ?? "system";
+
+        var command = new RenewLicenseCommand
+        {
+            LicenseId = id,
+            RenewalDate = request.RenewalDate,
+            PaymentReference = request.PaymentReference,
+            TenantId = tenantId,
+            PerformedBy = username
+        };
+
+        try
+        {
+            var response = await _mediator.Send(command);
+
+            _logger.LogInformation(
+                "License {LicenseId} renewed successfully for tenant {TenantId}",
+                id,
+                tenantId);
+
+            return Ok(response);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Failed to renew license {LicenseId}", id);
+            
+            return NotFound(new
+            {
+                error = new
+                {
+                    message = ex.Message,
+                    code = "NOT_FOUND",
+                    traceId = HttpContext.TraceIdentifier
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Get all licenses for the current tenant.
+    /// Role-based access: Admins see all licenses, Users see only their own.
+    /// </summary>
+    /// <param name="status">Filter by status (optional)</param>
+    /// <param name="expiringInDays">Filter licenses expiring in N days (optional)</param>
+    /// <response code="200">List of licenses</response>
+    [HttpGet]
+    [ProducesResponseType(typeof(List<LicenseDetailsResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetLicenses(
+        [FromQuery] string? status = null,
+        [FromQuery] int? expiringInDays = null)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        // Extract user email and role from JWT claims
+        // Try multiple claim types for email
+        var userEmail = User.Claims.FirstOrDefault(c => 
+            c.Type == "email" || 
+            c.Type == "preferred_username" || 
+            c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress" ||
+            c.Type == "sub")?.Value;
+        
+        // Try multiple claim types for role
+        var userRole = User.Claims.FirstOrDefault(c => 
+            c.Type == "role" || 
+            c.Type == "roles" ||
+            c.Type == "http://schemas.microsoft.com/ws/2008/06/identity/claims/role")?.Value;
+
+        // WORKAROUND: If JWT doesn't have role claim, try X-User-Role header from frontend
+        if (string.IsNullOrEmpty(userRole) && Request.Headers.TryGetValue("X-User-Role", out var roleHeader))
+        {
+            userRole = roleHeader.ToString();
+            _logger.LogInformation("Using role from X-User-Role header: {UserRole}", userRole);
+        }
+
+        _logger.LogInformation(
+            "User {UserEmail} with role {UserRole} requesting licenses for tenant {TenantId}. All claims: {Claims}",
+            userEmail,
+            userRole,
+            tenantId,
+            string.Join(", ", User.Claims.Select(c => $"{c.Type}={c.Value}")));
+
+        var query = new GetLicensesByTenantQuery
+        {
+            TenantId = tenantId,
+            Status = status,
+            ExpiringInDays = expiringInDays,
+            UserEmail = userEmail,
+            UserRole = userRole
+        };
+
+        var licenses = await _mediator.Send(query);
+
+        _logger.LogInformation(
+            "Retrieved {Count} licenses for tenant {TenantId} (user: {UserEmail}, role: {UserRole})",
+            licenses.Count,
+            tenantId,
+            userEmail,
+            userRole);
+
+        return Ok(licenses);
+    }
+
+    /// <summary>
+    /// Update license status (Admin only - approve/reject/suspend).
+    /// </summary>
+    /// <param name="id">License ID</param>
+    /// <param name="request">Status update request</param>
+    /// <response code="200">Status updated successfully</response>
+    /// <response code="403">User does not have Admin role</response>
+    /// <response code="404">License not found</response>
+    [HttpPut("{id}/status")]
+    [Authorize(Roles = "Admin")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateStatus(int id, [FromBody] UpdateLicenseStatusRequest request)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        var username = User.Claims.FirstOrDefault(c => c.Type == "preferred_username")?.Value 
+            ?? "system";
+
+        var command = new UpdateLicenseStatusCommand
+        {
+            LicenseId = id,
+            Status = request.Status,
+            Reason = request.Reason,
+            TenantId = tenantId,
+            PerformedBy = username
+        };
+
+        var success = await _mediator.Send(command);
+
+        if (!success)
+        {
+            _logger.LogWarning(
+                "License {LicenseId} not found for tenant {TenantId}",
+                id,
+                tenantId);
+
+            return NotFound(new
+            {
+                error = new
+                {
+                    message = "License not found",
+                    code = "NOT_FOUND",
+                    traceId = HttpContext.TraceIdentifier
+                }
+            });
+        }
+
+        _logger.LogInformation(
+            "License {LicenseId} status updated to {Status} by {Username}",
+            id,
+            request.Status,
+            username);
+
+        return Ok(new
+        {
+            message = $"License status updated to {request.Status}",
+            licenseId = id,
+            status = request.Status
+        });
+    }
+
+    /// <summary>
+    /// Get all available license types with pricing information.
+    /// </summary>
+    /// <response code="200">List of license types</response>
+    [HttpGet("types")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(List<LicenseType>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetLicenseTypes()
+    {
+        try
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+            using var connection = new SqlConnection(connectionString);
+            
+            var licenseTypes = await connection.QueryAsync<LicenseType>(
+                "sp_GetActiveLicenseTypes",
+                commandType: System.Data.CommandType.StoredProcedure);
+
+            _logger.LogInformation("Retrieved {Count} license types", licenseTypes.Count());
+            
+            return Ok(licenseTypes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving license types");
+            return StatusCode(500, new { error = "Failed to retrieve license types" });
+        }
+    }
+
+    /// <summary>
+    /// Get all users in the current tenant (Admin only - for assigning licenses).
+    /// </summary>
+    /// <response code="200">List of users in tenant</response>
+    /// <response code="403">User does not have Admin role</response>
+    [HttpGet("users")]
+    [ProducesResponseType(typeof(List<UserInfo>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetTenantUsers()
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        // Check if user is admin (using X-User-Role header workaround)
+        var userRole = User.Claims.FirstOrDefault(c => 
+            c.Type == "role" || 
+            c.Type == "roles" ||
+            c.Type == "http://schemas.microsoft.com/ws/2008/06/identity/claims/role")?.Value;
+
+        if (string.IsNullOrEmpty(userRole) && Request.Headers.TryGetValue("X-User-Role", out var roleHeader))
+        {
+            userRole = roleHeader.ToString();
+        }
+
+        if (string.IsNullOrEmpty(userRole) || !userRole.Contains("Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("Non-admin user attempted to access users list");
+            return Forbid();
+        }
+
+        try
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+            using var connection = new SqlConnection(connectionString);
+            
+            var users = await connection.QueryAsync<UserInfo>(
+                "sp_GetTenantUsers",
+                new { TenantId = tenantId },
+                commandType: System.Data.CommandType.StoredProcedure);
+
+            _logger.LogInformation("Retrieved {Count} users for tenant {TenantId}", users.Count(), tenantId);
+            
+            return Ok(users);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving tenant users");
+            return StatusCode(500, new { error = "Failed to retrieve users" });
+        }
+    }
+
+    /// <summary>
+    /// Delete a license (Admin only).
+    /// </summary>
+    /// <param name="id">License ID</param>
+    /// <response code="200">License deleted successfully</response>
+    /// <response code="403">User does not have Admin role</response>
+    /// <response code="404">License not found</response>
+    [HttpDelete("{id}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeleteLicense(int id)
+    {
+        var tenantId = _tenantContext.TenantId 
+            ?? throw new InvalidOperationException("TenantId not found in context");
+
+        // Check if user is admin (using X-User-Role header workaround)
+        var userRole = User.Claims.FirstOrDefault(c => 
+            c.Type == "role" || 
+            c.Type == "roles" ||
+            c.Type == "http://schemas.microsoft.com/ws/2008/06/identity/claims/role")?.Value;
+
+        if (string.IsNullOrEmpty(userRole) && Request.Headers.TryGetValue("X-User-Role", out var roleHeader))
+        {
+            userRole = roleHeader.ToString();
+        }
+
+        if (string.IsNullOrEmpty(userRole) || !userRole.Contains("Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("Non-admin user attempted to delete license {LicenseId}", id);
+            return Forbid();
+        }
+
+        try
+        {
+            var connectionString = _configuration.GetConnectionString("DefaultConnection");
+            using var connection = new SqlConnection(connectionString);
+            
+            // First check if license exists and belongs to this tenant
+            var checkResult = await connection.QueryFirstOrDefaultAsync(
+                "sp_CheckLicenseExists",
+                new { LicenseId = id, TenantId = tenantId },
+                commandType: System.Data.CommandType.StoredProcedure);
+            
+            var exists = checkResult?.LicenseExists ?? false;
+
+            if (!exists)
+            {
+                _logger.LogWarning("License {LicenseId} not found for tenant {TenantId}", id, tenantId);
+                return NotFound(new { error = "License not found" });
+            }
+
+            // Delete license and associated records using stored procedure
+            var result = await connection.QueryFirstOrDefaultAsync(
+                "sp_DeleteLicense",
+                new { LicenseId = id, TenantId = tenantId },
+                commandType: System.Data.CommandType.StoredProcedure);
+
+            _logger.LogInformation("License {LicenseId} deleted from tenant {TenantId}", id, tenantId);
+            
+            return Ok(new { message = "License deleted successfully", licenseId = id });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting license {LicenseId}", id);
+            return StatusCode(500, new { error = "Failed to delete license" });
+        }
+    }
+}

@@ -1,0 +1,281 @@
+@model List<LicenseDto>
+@{
+    ViewData["Title"] = "Licenses";
+    var userRole = Context.Session.GetString("UserRoles");
+    var isAdmin = !string.IsNullOrEmpty(userRole) && userRole.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    var userEmail = Context.Session.GetString("UserEmail");
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>
+            <i class="bi bi-file-earmark-text"></i> 
+            @if (isAdmin)
+            {
+                <text>All Licenses</text>
+            }
+            else
+            {
+                <text>My Licenses</text>
+            }
+        </h2>
+        <p class="text-muted mb-0">
+            @if (isAdmin)
+            {
+                <span class="badge bg-warning me-2"><i class="bi bi-shield-check"></i> Admin View</span>
+                <text>Viewing all licenses in your tenant</text>
+            }
+            else
+            {
+                <text>Manage your business licenses</text>
+            }
+        </p>
+    </div>
+    <a href="/Licenses/Create" class="btn btn-primary btn-lg">
+        <i class="bi bi-cart-plus"></i> Buy New License
+    </a>
+</div>
+
+@if (TempData["SuccessMessage"] != null)
+{
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+        <i class="bi bi-check-circle"></i> @TempData["SuccessMessage"]
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle"></i> @TempData["ErrorMessage"]
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+@if (Model != null && Model.Any())
+{
+    <!-- Summary Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h6 class="card-title">Total Licenses</h6>
+                    <h2 class="mb-0">@Model.Count</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <h6 class="card-title">Active</h6>
+                    <h2 class="mb-0">@Model.Count(l => l.Status == "Active")</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-warning text-white">
+                <div class="card-body">
+                    <h6 class="card-title">Pending</h6>
+                    <h2 class="mb-0">@Model.Count(l => l.Status == "Pending")</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-danger text-white">
+                <div class="card-body">
+                    <h6 class="card-title">Expired</h6>
+                    <h2 class="mb-0">@Model.Count(l => l.ExpiryDate < DateTime.UtcNow)</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Licenses Grid -->
+    <div class="row">
+        @foreach (var license in Model)
+        {
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card h-100 shadow-sm border-0">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-file-text text-primary"></i> @license.LicenseType
+                            </h5>
+                            @if (license.Status == "Active")
+                            {
+                                <span class="badge bg-success">Active</span>
+                            }
+                            else if (license.Status == "Expired")
+                            {
+                                <span class="badge bg-danger">Expired</span>
+                            }
+                            else if (license.Status == "Pending")
+                            {
+                                <span class="badge bg-warning">Pending</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary">@license.Status</span>
+                            }
+                        </div>
+
+                        <hr />
+
+                        <div class="mb-3">
+                            <small class="text-muted d-block">License Number</small>
+                            <strong>@license.LicenseNumber</strong>
+                        </div>
+
+                        @if (isAdmin)
+                        {
+                            <div class="mb-3">
+                                <small class="text-muted d-block">Applicant</small>
+                                <strong>@license.ApplicantName</strong><br/>
+                                <small class="text-muted">@license.ApplicantEmail</small>
+                            </div>
+                        }
+
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <small class="text-muted d-block">Issue Date</small>
+                                <strong>@license.IssueDate.ToString("MMM dd, yyyy")</strong>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted d-block">Expiry Date</small>
+                                <strong>@license.ExpiryDate.ToString("MMM dd, yyyy")</strong>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <small class="text-muted d-block">License Fee</small>
+                            <h5 class="text-primary mb-0">₹@license.Amount.ToString("N2")</h5>
+                        </div>
+
+                        @if (license.ExpiryDate < DateTime.UtcNow)
+                        {
+                            <div class="alert alert-danger py-2 mb-3">
+                                <i class="bi bi-exclamation-triangle"></i> <strong>Expired</strong>
+                            </div>
+                        }
+                        else if (license.ExpiryDate < DateTime.UtcNow.AddDays(30))
+                        {
+                            var daysLeft = (license.ExpiryDate - DateTime.UtcNow).Days;
+                            <div class="alert alert-warning py-2 mb-3">
+                                <i class="bi bi-clock"></i> Expires in <strong>@daysLeft days</strong>
+                            </div>
+                        }
+
+                        <div class="d-grid gap-2">
+                            <a href="/Licenses/Details/@license.Id" class="btn btn-primary">
+                                <i class="bi bi-eye"></i> View Details
+                            </a>
+                            
+                            @* Payment and Print Buttons *@
+                            @if (license.Status == "Active")
+                            {
+                                <a href="/Licenses/Print/@license.Id" class="btn btn-success" target="_blank">
+                                    <i class="bi bi-printer"></i> Print Certificate
+                                </a>
+                                <a href="/Licenses/DownloadInvoice/@license.Id" class="btn btn-outline-secondary btn-sm">
+                                    <i class="bi bi-file-earmark-pdf"></i> Download Invoice
+                                </a>
+                            }
+                            else if (license.Status == "Draft" || license.Status == "PaymentPending")
+                            {
+                                <a href="/Licenses/Payment/@license.Id" class="btn btn-warning">
+                                    <i class="bi bi-credit-card"></i> Complete Payment
+                                </a>
+                            }
+                            
+                            @if (isAdmin)
+                            {
+                                <button type="button" class="btn btn-outline-danger" onclick="confirmDelete(@license.Id, '@license.LicenseNumber')">
+                                    <i class="bi bi-trash"></i> Delete
+                                </button>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="text-center py-5">
+        <i class="bi bi-inbox" style="font-size: 5rem; color: #ddd;"></i>
+        <h3 class="mt-4">No Licenses Yet</h3>
+        <p class="text-muted mb-4">
+            @if (isAdmin)
+            {
+                <text>Start by creating licenses for your users</text>
+            }
+            else
+            {
+                <text>Get started by creating your first license</text>
+            }
+        </p>
+        <a href="/Licenses/Create" class="btn btn-primary btn-lg">
+            <i class="bi bi-plus-circle"></i> Buy License
+        </a>
+    </div>
+}
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">
+                    <i class="bi bi-exclamation-triangle"></i> Confirm Delete
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this license?</p>
+                <p class="mb-0"><strong>License: <span id="deleteLicenseNumber"></span></strong></p>
+                <p class="text-danger"><small>This action cannot be undone.</small></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form id="deleteForm" method="post" style="display:inline;">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash"></i> Delete License
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // Sync session to localStorage on page load
+        $(document).ready(function() {
+            var jwtToken = '@Context.Session.GetString("JwtToken")';
+            var userEmail = '@Context.Session.GetString("UserEmail")';
+            var userRoles = '@Context.Session.GetString("UserRoles")';
+            var tenantId = '@Context.Session.GetString("TenantId")';
+            var userId = '@Context.Session.GetInt32("UserId")';
+            
+            if (jwtToken && jwtToken !== '') {
+                console.log('Syncing session to localStorage');
+                AuthService.setAuthData({
+                    accessToken: jwtToken,
+                    email: userEmail,
+                    roles: userRoles ? userRoles.split(',') : [],
+                    tenantId: tenantId,
+                    userId: userId ? parseInt(userId) : null
+                });
+            }
+        });
+
+        function confirmDelete(licenseId, licenseNumber) {
+            document.getElementById('deleteLicenseNumber').textContent = licenseNumber;
+            document.getElementById('deleteForm').action = '/Licenses/Delete/' + licenseId;
+            
+            var modal = new bootstrap.Modal(document.getElementById('deleteModal'));
+            modal.show();
+        }
+    </script>
+}

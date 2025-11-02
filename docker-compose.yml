@@ -1,0 +1,188 @@
+services:
+  # SQL Server Database
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    container_name: gov2biz-mssql
+    environment:
+      SA_PASSWORD: "${SA_PASSWORD:-YourStrong@Passw0rd123}"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+      - ./Scripts:/Scripts
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${SA_PASSWORD:-YourStrong@Passw0rd123} -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - gov2biz-network
+
+  # Redis for Hangfire
+  redis:
+    image: redis:6-alpine
+    container_name: gov2biz-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+    networks:
+      - gov2biz-network
+
+  # License Service
+  licenseservice:
+    build:
+      context: .
+      dockerfile: LicenseService/Dockerfile
+    container_name: gov2biz-license
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ConnectionStrings__DefaultConnection=Server=mssql,1433;Database=Gov2Biz;User Id=sa;Password=${SA_PASSWORD:-YourStrong@Passw0rd123};TrustServerCertificate=True;
+      - Jwt__Issuer=Gov2Biz
+      - Jwt__Key=${JWT_KEY:-dev_jwt_key_change_me_min_32_chars_required_for_hmacsha256}
+      - Jwt__ExpiresInMinutes=60
+      - Jwt__Audience=Gov2Biz
+      - ConnectionStrings__Redis=redis:6379,abortConnect=false
+      - SERILOG__MINIMUMLEVEL=Information
+    depends_on:
+      mssql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "5001:80"
+    volumes:
+      - ./Logs:/app/Logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - gov2biz-network
+
+  # Payment Service
+  paymentservice:
+    build:
+      context: .
+      dockerfile: PaymentService/Dockerfile
+    container_name: gov2biz-payment
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ConnectionStrings__DefaultConnection=Server=mssql,1433;Database=Gov2Biz;User Id=sa;Password=${SA_PASSWORD:-YourStrong@Passw0rd123};TrustServerCertificate=True;
+      - Jwt__Issuer=Gov2Biz
+      - Jwt__Key=${JWT_KEY:-dev_jwt_key_change_me_min_32_chars_required_for_hmacsha256}
+      - Jwt__ExpiresInMinutes=60
+      - Jwt__Audience=Gov2Biz
+      - PAYMENT__WEBHOOK__SECRET=dev_payment_secret
+      - PAYMENT__WEBHOOK__REQUIRE_SIGNATURE=false
+      - Hangfire__Redis__Connection=redis:6379,abortConnect=false
+    depends_on:
+      mssql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "5002:80"
+    networks:
+      - gov2biz-network
+
+  # Document Service
+  documentservice:
+    build:
+      context: .
+      dockerfile: DocumentService/Dockerfile
+    container_name: gov2biz-document
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ConnectionStrings__DefaultConnection=Server=mssql,1433;Database=Gov2Biz;User Id=sa;Password=${SA_PASSWORD:-YourStrong@Passw0rd123};TrustServerCertificate=True;
+      - Jwt__Issuer=Gov2Biz
+      - Jwt__Key=${JWT_KEY:-dev_jwt_key_change_me_min_32_chars_required_for_hmacsha256}
+      - Jwt__ExpiresInMinutes=60
+      - Jwt__Audience=Gov2Biz
+    depends_on:
+      mssql:
+        condition: service_healthy
+    ports:
+      - "5003:80"
+    networks:
+      - gov2biz-network
+
+  # Notification Service
+  notificationservice:
+    build:
+      context: .
+      dockerfile: NotificationService/Dockerfile
+    container_name: gov2biz-notification
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - Jwt__Issuer=Gov2Biz
+      - Jwt__Key=${JWT_KEY:-dev_jwt_key_change_me_min_32_chars_required_for_hmacsha256}
+      - Jwt__ExpiresInMinutes=60
+      - Jwt__Audience=Gov2Biz
+      - NOTIFICATION__SMTP__HOST=smtp.example.local
+      - NOTIFICATION__SMTP__PORT=25
+      - NOTIFICATION__SMTP__USERNAME=
+      - NOTIFICATION__SMTP__PASSWORD=
+    depends_on:
+      - mssql
+    ports:
+      - "5004:80"
+    networks:
+      - gov2biz-network
+
+  # API Gateway (Ocelot)
+  ocelot:
+    build:
+      context: .
+      dockerfile: ApiGateway/Dockerfile
+    container_name: gov2biz-gateway
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+    volumes:
+      - ./ApiGateway/ocelot.json:/app/ocelot.json:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      - licenseservice
+      - paymentservice
+      - documentservice
+      - notificationservice
+    networks:
+      - gov2biz-network
+
+  # MVC Frontend
+  mvcfrontend:
+    build:
+      context: .
+      dockerfile: MVCFrontend/Dockerfile
+    container_name: gov2biz-frontend
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80
+      - ApiGateway__BaseUrl=http://ocelot:80
+    depends_on:
+      - ocelot
+    ports:
+      - "5005:80"
+    networks:
+      - gov2biz-network
+
+volumes:
+  mssql-data:
+    driver: local
+
+networks:
+  gov2biz-network:
+    driver: bridge

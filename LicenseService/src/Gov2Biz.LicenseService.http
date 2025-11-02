@@ -1,0 +1,6 @@
+@Gov2Biz.LicenseService_HostAddress = http://localhost:5287
+
+GET {{Gov2Biz.LicenseService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

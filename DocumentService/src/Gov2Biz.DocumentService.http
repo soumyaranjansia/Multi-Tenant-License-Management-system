@@ -1,0 +1,6 @@
+@Gov2Biz.DocumentService_HostAddress = http://localhost:5122
+
+GET {{Gov2Biz.DocumentService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

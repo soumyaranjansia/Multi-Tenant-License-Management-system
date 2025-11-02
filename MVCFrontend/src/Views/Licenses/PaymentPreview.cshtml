@@ -1,0 +1,270 @@
+@{
+    ViewData["Title"] = "Payment Preview";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <!-- License Preview Card -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="bi bi-file-earmark-text"></i> License Application Preview
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <!-- License Details -->
+                    <div class="alert alert-info">
+                        <h5><i class="bi bi-info-circle"></i> Application Details</h5>
+                        <hr>
+                        <div class="row" id="licenseDetails">
+                            <div class="col-md-6">
+                                <p><strong>Applicant Name:</strong> <span id="previewApplicantName"></span></p>
+                                <p><strong>Email:</strong> <span id="previewApplicantEmail"></span></p>
+                            </div>
+                            <div class="col-md-6">
+                                <p><strong>License Type:</strong> <span id="previewLicenseType"></span></p>
+                                <p><strong>Valid Until:</strong> <span id="previewExpiryDate"></span></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Payment Amount -->
+                    <div class="text-center my-4 p-4 bg-light rounded">
+                        <h6 class="text-muted mb-2">Amount to Pay</h6>
+                        <h2 class="text-success mb-0">₹ <span id="previewAmount"></span></h2>
+                    </div>
+
+                    <!-- Payment Methods -->
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Select Payment Method:</label>
+                        <div class="list-group">
+                            <button type="button" class="list-group-item list-group-item-action payment-method-btn active" data-method="razorpay">
+                                <div class="d-flex align-items-center">
+                                    <i class="bi bi-credit-card" style="font-size: 2rem; margin-right: 1rem; color: #0d6efd;"></i>
+                                    <div>
+                                        <h6 class="mb-1">Razorpay (Recommended)</h6>
+                                        <small class="text-muted">Credit/Debit Card, UPI, Net Banking, Wallets</small>
+                                    </div>
+                                    <i class="bi bi-check-circle-fill ms-auto text-success" style="font-size: 24px;"></i>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Payment Button -->
+                    <div class="d-grid gap-2">
+                        <button id="payNowBtn" class="btn btn-success btn-lg">
+                            <i class="bi bi-lock-fill"></i> Proceed to Secure Payment
+                        </button>
+                        <a href="/Licenses/Create" class="btn btn-outline-secondary">
+                            <i class="bi bi-arrow-left"></i> Back to Form
+                        </a>
+                    </div>
+
+                    <!-- Security Note -->
+                    <div class="text-center mt-3">
+                        <small class="text-muted">
+                            <i class="bi bi-shield-check"></i> Your payment is secure and encrypted
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Payment Flow Info -->
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h6 class="card-title">
+                        <i class="bi bi-info-circle text-info"></i> What happens after payment?
+                    </h6>
+                    <ol class="mb-0">
+                        <li>Complete payment securely via Razorpay</li>
+                        <li>Your license will be created automatically after successful payment</li>
+                        <li>License will have "Pending" status awaiting admin approval</li>
+                        <li>You'll receive notifications at each step</li>
+                        <li>Download invoice anytime from your licenses page</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+        // Sync session to localStorage first
+        $(document).ready(function() {
+            var jwtToken = '@Context.Session.GetString("JwtToken")';
+            if (jwtToken && jwtToken !== '') {
+                AuthService.setAuthData({
+                    accessToken: jwtToken,
+                    email: '@Context.Session.GetString("UserEmail")',
+                    roles: '@Context.Session.GetString("UserRoles")'.split(','),
+                    tenantId: '@Context.Session.GetString("TenantId")',
+                    userId: parseInt('@Context.Session.GetInt32("UserId")')
+                });
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load data from session storage
+            const pendingLicense = JSON.parse(sessionStorage.getItem('pendingLicense') || '{}');
+            
+            console.log('Pending License Data:', pendingLicense);
+            
+            if (!pendingLicense.applicantName) {
+                // No pending license data, redirect back to create page
+                console.warn('No pending license data found, redirecting...');
+                window.location.href = '/Licenses/Create';
+                return;
+            }
+
+            // Display license details
+            document.getElementById('previewApplicantName').textContent = pendingLicense.applicantName;
+            document.getElementById('previewApplicantEmail').textContent = pendingLicense.applicantEmail;
+            document.getElementById('previewLicenseType').textContent = pendingLicense.licenseType;
+            document.getElementById('previewAmount').textContent = pendingLicense.amount.toFixed(2);
+            
+            const expiryDate = new Date(pendingLicense.expiryDate);
+            document.getElementById('previewExpiryDate').textContent = expiryDate.toLocaleDateString('en-GB', { 
+                day: '2-digit', 
+                month: 'short', 
+                year: 'numeric' 
+            });
+
+            console.log('Payment preview loaded successfully');
+
+            // Payment method selection
+            document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.payment-method-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                });
+            });
+
+            // Handle payment - Create temporary order without license ID
+            document.getElementById('payNowBtn').addEventListener('click', function() {
+                const amount = pendingLicense.amount;
+                const btn = this;
+                
+                btn.disabled = true;
+                btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+
+                console.log('Creating pre-payment order...');
+
+                // Create payment order without license (pre-payment) with authentication
+                AuthService.fetchWithAuth('/Licenses/CreatePrePaymentOrder', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        amount: amount,
+                        licenseType: pendingLicense.licenseType,
+                        applicantName: pendingLicense.applicantName,
+                        applicantEmail: pendingLicense.applicantEmail
+                    })
+                })
+                .then(response => response ? response.json() : null)
+                .then(data => {
+                    console.log('Pre-payment order response:', data);
+                    if (data.success) {
+                        initiateRazorpayPayment(data.data, pendingLicense);
+                    } else {
+                        alert('Failed to create payment order: ' + (data.error || 'Unknown error'));
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-lock-fill"></i> Proceed to Secure Payment';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error creating payment order:', error);
+                    alert('Failed to create payment order. Please try again.');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-lock-fill"></i> Proceed to Secure Payment';
+                });
+            });
+        });
+
+        function initiateRazorpayPayment(orderData, licenseData) {
+            console.log('Initiating Razorpay payment with order:', orderData);
+            
+            const options = {
+                key: orderData.key || 'rzp_test_RabTokVKFquXps',
+                amount: orderData.amount * 100, // Amount in paise
+                currency: orderData.currency || 'INR',
+                name: 'Gov2Biz',
+                description: licenseData.licenseType + ' License',
+                order_id: orderData.orderId,
+                handler: function(response) {
+                    console.log('Razorpay payment successful:', response);
+                    createLicenseAfterPayment(response, licenseData, orderData.paymentId);
+                },
+                prefill: {
+                    name: licenseData.applicantName,
+                    email: licenseData.applicantEmail
+                },
+                theme: {
+                    color: '#0d6efd'
+                },
+                modal: {
+                    ondismiss: function() {
+                        const btn = document.getElementById('payNowBtn');
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-lock-fill"></i> Proceed to Secure Payment';
+                    }
+                }
+            };
+
+            const rzp = new Razorpay(options);
+            rzp.open();
+        }
+
+        function createLicenseAfterPayment(razorpayResponse, licenseData, paymentId) {
+            // Show loading
+            const btn = document.getElementById('payNowBtn');
+            btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Creating License...';
+            
+            console.log('Creating license after payment...');
+            
+            // Create the license after successful payment with authentication
+            AuthService.fetchWithAuth('/Licenses/CreateAfterPayment', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    applicantName: licenseData.applicantName,
+                    applicantEmail: licenseData.applicantEmail,
+                    licenseType: licenseData.licenseType,
+                    amount: licenseData.amount,
+                    expiryDate: licenseData.expiryDate,
+                    paymentId: paymentId,
+                    razorpayOrderId: razorpayResponse.razorpay_order_id,
+                    razorpayPaymentId: razorpayResponse.razorpay_payment_id,
+                    razorpaySignature: razorpayResponse.razorpay_signature
+                })
+            })
+            .then(response => response ? response.json() : null)
+            .then(data => {
+                console.log('License creation response:', data);
+                if (data.success) {
+                    // Clear session storage
+                    sessionStorage.removeItem('pendingLicense');
+                    
+                    // Redirect to success page
+                    window.location.href = '/Licenses?success=true&message=License created and payment completed successfully!';
+                } else {
+                    alert('Payment successful but license creation failed. Please contact support with payment ID: ' + razorpayResponse.razorpay_payment_id);
+                    window.location.href = '/Licenses';
+                }
+            })
+            .catch(error => {
+                console.error('Error creating license after payment:', error);
+                alert('Payment successful but license creation failed. Please contact support with payment ID: ' + razorpayResponse.razorpay_payment_id);
+                window.location.href = '/Licenses';
+            });
+        }
+    </script>
+}

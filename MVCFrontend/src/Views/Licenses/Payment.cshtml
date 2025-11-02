@@ -1,0 +1,202 @@
+@model Gov2Biz.MVCFrontend.Models.PaymentViewModel
+
+@{
+    ViewData["Title"] = "Complete Payment";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <!-- Payment Summary Card -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-credit-card"></i> Complete Your Payment
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <!-- License Details -->
+                    <div class="alert alert-info">
+                        <h5><i class="fas fa-file-alt"></i> License Details</h5>
+                        <hr>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <p><strong>License Type:</strong> @Model.LicenseType</p>
+                                <p><strong>Applicant:</strong> @Model.ApplicantName</p>
+                            </div>
+                            <div class="col-md-6">
+                                <p><strong>Duration:</strong> 12 months</p>
+                                <p><strong>Issue Date:</strong> @Model.IssueDate.ToString("dd MMM yyyy")</p>
+                                <p><strong>Expiry Date:</strong> @Model.ExpiryDate.ToString("dd MMM yyyy")</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Payment Amount -->
+                    <div class="text-center my-4 p-4 bg-light rounded">
+                        <h6 class="text-muted mb-2">Amount to Pay</h6>
+                        <h2 class="text-success mb-0">₹ @Model.Amount.ToString("N2")</h2>
+                    </div>
+
+                    <!-- Payment Methods -->
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Select Payment Method:</label>
+                        <div class="list-group">
+                            <button type="button" class="list-group-item list-group-item-action payment-method-btn active" data-method="razorpay">
+                                <div class="d-flex align-items-center">
+                                    <i class="fas fa-credit-card fa-2x me-3 text-primary"></i>
+                                    <div>
+                                        <h6 class="mb-1">Razorpay (Recommended)</h6>
+                                        <small class="text-muted">Credit/Debit Card, UPI, Net Banking, Wallets</small>
+                                    </div>
+                                    <i class="fas fa-check-circle ms-auto text-success" style="font-size: 24px;"></i>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Payment Button -->
+                    <div class="d-grid gap-2">
+                        <button id="payNowBtn" class="btn btn-success btn-lg">
+                            <i class="fas fa-lock"></i> Proceed to Secure Payment
+                        </button>
+                        <a href="/Licenses" class="btn btn-outline-secondary">
+                            <i class="fas fa-arrow-left"></i> Cancel
+                        </a>
+                    </div>
+
+                    <!-- Security Note -->
+                    <div class="text-center mt-3">
+                        <small class="text-muted">
+                            <i class="fas fa-shield-alt"></i> Your payment is secure and encrypted
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Payment Flow Info -->
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h6 class="card-title">
+                        <i class="fas fa-info-circle text-info"></i> What happens after payment?
+                    </h6>
+                    <ol class="mb-0">
+                        <li>Complete payment securely via Razorpay</li>
+                        <li>Your license will be created with "Pending" status</li>
+                        <li>Admin will review and approve your license</li>
+                        <li>You'll receive notifications at each step</li>
+                        <li>Download invoice anytime from your licenses page</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Hidden form data -->
+<input type="hidden" id="licenseId" value="@Model.LicenseId" />
+<input type="hidden" id="amount" value="@Model.Amount" />
+<input type="hidden" id="razorpayKey" value="@ViewBag.RazorpayKey" />
+
+@section Scripts {
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Sync session to localStorage
+            var jwtToken = '@Context.Session.GetString("JwtToken")';
+            if (jwtToken && jwtToken !== '') {
+                AuthService.setAuthData({
+                    accessToken: jwtToken,
+                    email: '@Context.Session.GetString("UserEmail")',
+                    roles: '@Context.Session.GetString("UserRoles")'.split(','),
+                    tenantId: '@Context.Session.GetString("TenantId")',
+                    userId: parseInt('@Context.Session.GetInt32("UserId")')
+                });
+            }
+
+            // Payment method selection
+            $('.payment-method-btn').click(function() {
+                $('.payment-method-btn').removeClass('active');
+                $(this).addClass('active');
+            });
+
+            // Handle payment
+            $('#payNowBtn').click(function() {
+                const licenseId = parseInt($('#licenseId').val());
+                const amount = parseFloat($('#amount').val());
+                
+                $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Processing...');
+
+                // Create payment order with authentication
+                AuthService.ajaxWithAuth({
+                    url: '/api/payment/create-order',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        licenseId: licenseId,
+                        amount: amount,
+                        paymentMethod: 'razorpay'
+                    }),
+                    success: function(response) {
+                        initiateRazorpayPayment(response);
+                    },
+                    error: function(xhr) {
+                        alert('Failed to create payment order. Please try again.');
+                        $('#payNowBtn').prop('disabled', false).html('<i class="fas fa-lock"></i> Proceed to Secure Payment');
+                    }
+                });
+            });
+        });
+
+        function initiateRazorpayPayment(orderData) {
+            const options = {
+                key: orderData.key,
+                amount: orderData.amount * 100, // Amount in paise
+                currency: orderData.currency,
+                name: 'Gov2Biz',
+                description: 'License Payment',
+                order_id: orderData.orderId,
+                handler: function(response) {
+                    verifyPayment(orderData.paymentId, response);
+                },
+                prefill: {
+                    name: '@Model.ApplicantName',
+                    email: '@Model.UserEmail'
+                },
+                theme: {
+                    color: '#0d6efd'
+                },
+                modal: {
+                    ondismiss: function() {
+                        $('#payNowBtn').prop('disabled', false).html('<i class="fas fa-lock"></i> Proceed to Secure Payment');
+                    }
+                }
+            };
+
+            const rzp = new Razorpay(options);
+            rzp.open();
+        }
+
+        function verifyPayment(paymentId, razorpayResponse) {
+            AuthService.ajaxWithAuth({
+                url: '/api/payment/verify',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({
+                    paymentId: paymentId,
+                    razorpayOrderId: razorpayResponse.razorpay_order_id,
+                    razorpayPaymentId: razorpayResponse.razorpay_payment_id,
+                    razorpaySignature: razorpayResponse.razorpay_signature
+                }),
+                success: function(response) {
+                    window.location.href = '/Licenses?success=true&invoice=' + response.invoiceId;
+                },
+                error: function(xhr) {
+                    alert('Payment verification failed. Please contact support.');
+                    window.location.href = '/Licenses';
+                }
+            });
+        }
+    </script>
+}

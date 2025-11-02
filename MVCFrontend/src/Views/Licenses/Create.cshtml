@@ -1,0 +1,249 @@
+@model CreateLicenseRequest
+@{
+    ViewData["Title"] = "Buy New License";
+    var licenseTypes = ViewBag.LicenseTypes as List<LicenseTypeDto> ?? new List<LicenseTypeDto>();
+    var users = ViewBag.Users as List<UserDto> ?? new List<UserDto>();
+    var isAdmin = ViewBag.IsAdmin as bool? ?? false;
+}
+
+<div class="row justify-content-center">
+    <div class="col-md-10 col-lg-8">
+        <div class="d-flex align-items-center mb-4">
+            <div>
+                <h2><i class="bi bi-cart-plus"></i> Buy New License</h2>
+                <p class="text-muted mb-0">Fill out the form below to purchase a new license</p>
+            </div>
+            @if (isAdmin)
+            {
+                <span class="badge bg-warning ms-auto"><i class="bi bi-shield-check"></i> Admin Mode</span>
+            }
+        </div>
+
+        <div class="card shadow-lg border-0">
+            <div class="card-body p-4">
+                <form asp-action="Create" method="post" id="createLicenseForm">
+                    @if (isAdmin)
+                    {
+                        <div class="alert alert-info mb-4">
+                            <i class="bi bi-info-circle"></i>
+                            <strong>Admin Privileges:</strong> You can assign this license to any user. The license will be automatically activated.
+                        </div>
+
+                        <!-- User Selection for Admin -->
+                        <div class="mb-4">
+                            <label class="form-label fw-bold">
+                                <i class="bi bi-person"></i> Assign to User *
+                            </label>
+                            <select id="userSelect" class="form-select form-select-lg" required>
+                                <option value="">-- Select User --</option>
+                                @foreach (var user in users)
+                                {
+                                    <option value="@user.Email" data-name="@user.Username">
+                                        @user.Username (@user.Email) - @user.Roles
+                                    </option>
+                                }
+                            </select>
+                            <small class="form-text text-muted">Select the user who will own this license</small>
+                        </div>
+                    }
+
+                    <div class="mb-4">
+                        <label asp-for="ApplicantName" class="form-label fw-bold">
+                            <i class="bi bi-person-badge"></i> Applicant Name *
+                        </label>
+                        <input asp-for="ApplicantName" class="form-control form-control-lg" placeholder="Enter full name" required />
+                        <span asp-validation-for="ApplicantName" class="text-danger"></span>
+                    </div>
+
+                    <div class="mb-4">
+                        <label asp-for="ApplicantEmail" class="form-label fw-bold">
+                            <i class="bi bi-envelope"></i> Applicant Email *
+                        </label>
+                        @if (isAdmin)
+                        {
+                            <input asp-for="ApplicantEmail" type="email" class="form-control form-control-lg" placeholder="email@example.com" required />
+                        }
+                        else
+                        {
+                            <input asp-for="ApplicantEmail" type="email" class="form-control form-control-lg" placeholder="email@example.com" required readonly />
+                        }
+                        <span asp-validation-for="ApplicantEmail" class="text-danger"></span>
+                    </div>
+
+                    <div class="mb-4">
+                        <label asp-for="LicenseType" class="form-label fw-bold">
+                            <i class="bi bi-file-earmark-text"></i> License Type *
+                        </label>
+                        <select asp-for="LicenseType" id="licenseTypeSelect" class="form-select form-select-lg" required>
+                            <option value="">-- Select License Type --</option>
+                            @foreach (var type in licenseTypes)
+                            {
+                                <option value="@type.TypeName" 
+                                        data-amount="@type.Amount" 
+                                        data-duration="@type.DurationMonths"
+                                        data-description="@type.Description">
+                                    @type.TypeName - $@type.Amount.ToString("N2") (@type.DurationMonths months)
+                                </option>
+                            }
+                        </select>
+                        <div id="licenseTypeDescription" class="form-text" style="display:none;">
+                            <i class="bi bi-info-circle"></i> <span id="descriptionText"></span>
+                        </div>
+                        <span asp-validation-for="LicenseType" class="text-danger"></span>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label asp-for="Amount" class="form-label fw-bold">
+                                <i class="bi bi-cash"></i> License Fee
+                            </label>
+                            <div class="input-group input-group-lg">
+                                <span class="input-group-text">$</span>
+                                <input asp-for="Amount" type="number" step="0.01" class="form-control" id="amountInput" readonly style="background-color: #f8f9fa;" />
+                            </div>
+                            <small class="form-text text-muted">Fee is automatically set based on license type</small>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label asp-for="ExpiryDate" class="form-label fw-bold">
+                                <i class="bi bi-calendar-event"></i> Expiry Date *
+                            </label>
+                            <input asp-for="ExpiryDate" type="date" class="form-control form-control-lg" id="expiryDateInput" required />
+                            <small class="form-text text-muted">Automatically set based on license type</small>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="bi bi-credit-card"></i>
+                        <strong>Payment Required:</strong> You will be redirected to complete payment before your license is activated.
+                        @if (isAdmin)
+                        {
+                            <br><small class="text-muted"><i class="bi bi-info-circle"></i> As an admin, you can use test payment methods or approve payments directly.</small>
+                        }
+                    </div>
+
+                    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+                    <div class="d-grid gap-2 d-md-flex">
+                        <button type="button" id="proceedToPaymentBtn" class="btn btn-success btn-lg flex-grow-1">
+                            <i class="bi bi-credit-card"></i> Proceed to Payment
+                        </button>
+                        <a href="/Licenses" class="btn btn-outline-secondary btn-lg">
+                            <i class="bi bi-x-circle"></i> Cancel
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    
+    <script>
+        // Sync session to localStorage
+        $(document).ready(function() {
+            var jwtToken = '@Context.Session.GetString("JwtToken")';
+            if (jwtToken && jwtToken !== '') {
+                AuthService.setAuthData({
+                    accessToken: jwtToken,
+                    email: '@Context.Session.GetString("UserEmail")',
+                    roles: '@Context.Session.GetString("UserRoles")'.split(','),
+                    tenantId: '@Context.Session.GetString("TenantId")',
+                    userId: parseInt('@Context.Session.GetInt32("UserId")')
+                });
+            }
+        });
+
+        // Auto-populate amount and expiry date when license type is selected
+        document.getElementById('licenseTypeSelect').addEventListener('change', function() {
+            const selectedOption = this.options[this.selectedIndex];
+            const amount = selectedOption.getAttribute('data-amount');
+            const duration = selectedOption.getAttribute('data-duration');
+            const description = selectedOption.getAttribute('data-description');
+            
+            if (amount) {
+                document.getElementById('amountInput').value = amount;
+            }
+            
+            if (duration) {
+                const today = new Date();
+                today.setMonth(today.getMonth() + parseInt(duration));
+                const expiryDate = today.toISOString().split('T')[0];
+                document.getElementById('expiryDateInput').value = expiryDate;
+            }
+
+            if (description) {
+                document.getElementById('descriptionText').textContent = description;
+                document.getElementById('licenseTypeDescription').style.display = 'block';
+            } else {
+                document.getElementById('licenseTypeDescription').style.display = 'none';
+            }
+        });
+
+        @if (isAdmin)
+        {
+            <text>
+            // Auto-populate email and name when user is selected (Admin only)
+            if (document.getElementById('userSelect')) {
+                document.getElementById('userSelect').addEventListener('change', function() {
+                    const selectedOption = this.options[this.selectedIndex];
+                    const email = selectedOption.value;
+                    const name = selectedOption.getAttribute('data-name');
+                    
+                    if (email) {
+                        document.querySelector('input[name="ApplicantEmail"]').value = email;
+                        if (name && !document.querySelector('input[name="ApplicantName"]').value) {
+                            document.querySelector('input[name="ApplicantName"]').value = name;
+                        }
+                    }
+                });
+            }
+            </text>
+        }
+
+        // Universal payment flow for both admin and regular users
+        document.getElementById('proceedToPaymentBtn').addEventListener('click', function() {
+            console.log('Proceed to Payment button clicked');
+            const form = document.getElementById('createLicenseForm');
+            
+            // Check form validity
+            if (!form.checkValidity()) {
+                console.log('Form validation failed');
+                form.reportValidity();
+                return;
+            }
+            
+            // Get form data
+            const applicantName = document.querySelector('input[name="ApplicantName"]').value;
+            const applicantEmail = document.querySelector('input[name="ApplicantEmail"]').value;
+            const licenseType = document.getElementById('licenseTypeSelect').value;
+            const amount = parseFloat(document.getElementById('amountInput').value);
+            const expiryDate = document.getElementById('expiryDateInput').value;
+            
+            console.log('Form data collected:', {
+                applicantName: applicantName,
+                applicantEmail: applicantEmail,
+                licenseType: licenseType,
+                amount: amount,
+                expiryDate: expiryDate
+            });
+            
+            // Store form data in session storage for later use
+            const licenseData = {
+                applicantName: applicantName,
+                applicantEmail: applicantEmail,
+                licenseType: licenseType,
+                amount: amount,
+                expiryDate: expiryDate
+            };
+            
+            sessionStorage.setItem('pendingLicense', JSON.stringify(licenseData));
+            console.log('Data stored in sessionStorage');
+            
+            // Redirect to payment preview page
+            window.location.href = '/Licenses/PaymentPreview';
+        });
+    </script>
+}

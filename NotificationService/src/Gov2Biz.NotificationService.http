@@ -1,0 +1,6 @@
+@Gov2Biz.NotificationService_HostAddress = http://localhost:5012
+
+GET {{Gov2Biz.NotificationService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
